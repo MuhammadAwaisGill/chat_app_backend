@@ -33,13 +33,7 @@ app.get('/api/test', (req, res) => {
 });
 
 // Socket.IO connection
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-  });
-});
+require('./sockets/chatSocket')(io);
 
 // Start server
 const PORT = process.env.PORT || 5000;
