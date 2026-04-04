@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const Message = require('../models/Message');
 const User = require('../models/User');
+const Call = require('../models/Call');
 
 const userSocketMap = {};
 
@@ -26,6 +27,7 @@ module.exports = (io) => {
 
     socket.join(userId);
 
+    // ─── CHAT ───────────────────────────────────────────
     socket.on('send_message', async (data) => {
       const { receiverId, text, groupId } = data;
       const message = new Message({
@@ -56,6 +58,76 @@ module.exports = (io) => {
       socket.to(data.receiverId).emit('typing_stop', { senderId: userId });
     });
 
+    // ─── WEBRTC SIGNALING ────────────────────────────────
+    socket.on('call_offer', async (data) => {
+      const { calleeId, offer, callType } = data;
+      const calleeSocketId = userSocketMap[calleeId];
+
+      // Save call record
+      const call = new Call({
+        participants: [userId, calleeId],
+        type: callType || 'video',
+        startTime: new Date(),
+      });
+      await call.save();
+
+      if (calleeSocketId) {
+        io.to(calleeSocketId).emit('call_offer', {
+          callerId: userId,
+          offer,
+          callType,
+          callId: call._id,
+        });
+      } else {
+        // Callee offline — mark missed
+        call.status = 'missed';
+        await call.save();
+        socket.emit('call_missed', { calleeId });
+      }
+    });
+
+    socket.on('call_answer', (data) => {
+      const { callerId, answer, callId } = data;
+      const callerSocketId = userSocketMap[callerId];
+      if (callerSocketId) {
+        io.to(callerSocketId).emit('call_answer', { answer, callId });
+      }
+    });
+
+    socket.on('ice_candidate', (data) => {
+      const { targetId, candidate } = data;
+      const targetSocketId = userSocketMap[targetId];
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('ice_candidate', { candidate, senderId: userId });
+      }
+    });
+
+    socket.on('call_end', async (data) => {
+      const { targetId, callId } = data;
+      const targetSocketId = userSocketMap[targetId];
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('call_end', { senderId: userId });
+      }
+      if (callId) {
+        await Call.findByIdAndUpdate(callId, {
+          status: 'answered',
+          endTime: new Date(),
+        });
+      }
+    });
+
+    socket.on('call_reject', async (data) => {
+      const { callerId, callId } = data;
+      const callerSocketId = userSocketMap[callerId];
+      if (callerSocketId) {
+        io.to(callerSocketId).emit('call_rejected', { calleeId: userId });
+      }
+      if (callId) {
+        await Call.findByIdAndUpdate(callId, { status: 'rejected' });
+      }
+    });
+
+    // ─── DISCONNECT ──────────────────────────────────────
     socket.on('disconnect', async () => {
       delete userSocketMap[userId];
       await User.findByIdAndUpdate(userId, {
@@ -65,4 +137,4 @@ module.exports = (io) => {
       console.log('User disconnected:', userId);
     });
   });
-}; 
+};
